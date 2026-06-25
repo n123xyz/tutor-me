@@ -1,0 +1,21 @@
+[project]
+name = "tutor-me"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "customtkinter>=6.0.0",
+    "deepface>=0.0.100",
+    "mss>=10.2.0",
+    "ollama>=0.6.2",
+    "openai>=2.44.0",
+    "opencv-python>=4.13.0.92",
+    "pillow>=12.2.0",
+    "pydantic>=2.13.4",
+    "pygame>=2.6.1",
+    "pyscreenshot>=3.1",
+    "pytesseract>=0.3.13",
+    "tf-keras>=2.21.0",
+    "websockets>=16.0",
+]
