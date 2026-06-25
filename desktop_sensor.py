@@ -55,3 +55,20 @@ class DesktopSensor:
         except Exception as e:
             print(f"Error capturing screenshot to file: {e}")
             return ""
+
+    def get_screen_text_and_image(self) -> tuple[str, str]:
+        try:
+            path = "temp_screenshot.jpg"
+            if self._capture_screen(path, "80"):
+                image = Image.open(path)
+                # Perform OCR on full resolution image
+                text = pytesseract.image_to_string(image)
+                
+                # Downscale for the vision model
+                image.thumbnail((800, 600))
+                image.save(path, format="JPEG", quality=70)
+                return text, path
+            return "", ""
+        except Exception as e:
+            print(f"Error in OCR and image capture: {e}")
+            return "", ""

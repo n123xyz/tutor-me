@@ -56,7 +56,7 @@ class Warden:
                 return "allowed", f"Keyword matched: '{kw}'"
                 
         # Known distraction keywords (could be moved to config)
-        distraction_keywords = ["youtube", "netflix", "twitter", "reddit", "facebook", "instagram", "tiktok"]
+        distraction_keywords = ["netflix", "twitter", "reddit", "facebook", "instagram", "tiktok"]
         for kw in distraction_keywords:
             if kw in app_lower or kw in text_lower:
                 return "distracted", f"Distraction keyword matched: '{kw}'"
@@ -138,28 +138,88 @@ class Warden:
             print(f"Error in vision evaluation: {e}")
             return "ambiguous", f"Vision model crashed: {str(e)}"
 
-    def evaluate_emotion(self, image_path: str) -> str:
+    def evaluate_physical_state(self, webcam_img: str, goal: str) -> Tuple[bool, str]:
+        if not webcam_img or not os.path.exists(webcam_img):
+            return False, "No webcam snapshot available"
+            
+        prompt = (
+            f"The user's active focus goal is: '{goal}'. "
+            "Analyze the webcam image to see if they are currently physically distracted or not working on their goal. "
+            "Specifically check if they are:\n"
+            "1. Looking at, holding, or using their mobile phone.\n"
+            "2. Looking down or away from their computer screen for non-work-related reasons.\n"
+            "3. Sleeping, dozing off, or resting their head on their desk.\n"
+            "4. Not present at their desk / not in camera view (empty chair or no person visible).\n\n"
+            "Respond with ONLY a valid JSON object in this format:\n"
+            "{\"distracted\": true | false, \"reason\": \"a short explanation of what the user is doing or why they are not distracted\"}"
+        )
+        
+        try:
+            print("--- Warden: Running webcam physical distraction check with Gemma Vision ---")
+            response = ollama.chat(model="gemma4:e4b", messages=[{
+                "role": "user",
+                "content": prompt,
+                "images": [webcam_img]
+            }])
+            
+            content = response['message']['content'].strip()
+            
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+                
+            try:
+                parsed = json.loads(content)
+                is_distracted = parsed.get("distracted", False)
+                reason = parsed.get("reason", "No reason provided")
+                return bool(is_distracted), reason
+            except json.JSONDecodeError:
+                content_lower = content.lower()
+                if '"distracted": true' in content_lower or '"distracted":true' in content_lower:
+                    return True, "Fallback parsing: physical distraction detected"
+                return False, "Could not parse vision response"
+                
+        except Exception as e:
+            print(f"Error in physical state evaluation: {e}")
+            return False, f"Vision model failed: {str(e)}"
+
+    def evaluate_emotion(self, image_paths: str | list) -> str:
         try:
             from deepface import DeepFace
-            if not os.path.exists(image_path):
+            from statistics import mode
+            
+            if isinstance(image_paths, str):
+                image_paths = [image_paths]
+                
+            emotions = []
+            for path in image_paths:
+                if not os.path.exists(path):
+                    continue
+                try:
+                    res = DeepFace.analyze(path, actions=['emotion'], enforce_detection=False)
+                    if isinstance(res, list):
+                        res = res[0]
+                    emotions.append(res.get('dominant_emotion', 'neutral'))
+                except Exception:
+                    pass
+                    
+            if not emotions:
                 return "neutral"
-            # Extract dominant emotion
-            res = DeepFace.analyze(image_path, actions=['emotion'], enforce_detection=False)
-            if isinstance(res, list):
-                res = res[0]
-            return res.get('dominant_emotion', 'neutral')
+                
+            return mode(emotions)
         except Exception as e:
             print(f"Error evaluating emotion: {e}")
             return "neutral"
 
     def generate_intervention(self, state_summary: str, ocr_text: str, image_path: Optional[str], emotion: str = "neutral") -> str:
         if emotion in ["sad", "angry", "fear"]:
-            prompt = f"The user is currently distracted. They are looking at: '{ocr_text[:200]}...'. Their face shows they are feeling {emotion}/frustrated. Generate exactly one short, soft, encouraging sentence to gently nudge them back to work or suggest they take a deep breath."
+            prompt = f"The user is currently distracted. They are looking at: '{ocr_text[:200]}...'. Their face shows they are feeling {emotion}/frustrated. Generate exactly one short, slightly sarcastic sentence to nudge them back to work. Do NOT suggest they take a break or stop working."
         else:
             emotion_str = f" Their face shows they are feeling {emotion}." if emotion != "neutral" else ""
             prompt = f"The user is currently distracted. They are looking at: '{ocr_text[:200]}...'.{emotion_str} Generate exactly one short, punchy, sarcastic sentence to nudge them back to work."
             
-        messages = [{"role": "user", "content": prompt}]
+        messages = [{"role": "user", "content": prompt + " Do NOT offer to help the user with their task. You cannot directly help the user, you are just there to provide a behavioral intervention or nudge."}]
         
         if image_path and os.path.exists(image_path):
             messages[0]['images'] = [image_path]
