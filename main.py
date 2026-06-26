@@ -114,34 +114,7 @@ async def desktop_loop():
                 print(f"--- Desktop Loop: User is focused on desktop. ({reason}) ---")
         await asyncio.sleep(300)
 
-async def emotion_loop():
-    while True:
-        await asyncio.sleep(360) # Every 6 minutes
-        if state.pomodoro_mode == "focus" and app.current_mode == "minimal":
-            print("--- Emotion Loop: Running facial analysis ---")
-            webcam_imgs = await asyncio.to_thread(webcam.get_video_snapshots, 15.0, 15)
-            if webcam_imgs:
-                last_webcam_img = webcam_imgs[-1]
-                emotion = await asyncio.to_thread(warden.evaluate_emotion, webcam_imgs)
-                state.state.current_emotion = emotion
-                print(f"--- Emotion Loop: Detected emotion: '{emotion}' ---")
-                
-                # Proactive Intervention if extremely frustrated but focused
-                if emotion in ["sad", "angry", "fear"]:
-                    print("--- Emotion Loop: High frustration detected. Escalating to Gemma 4 for context ---")
-                    text, desktop_img = await asyncio.to_thread(desktop.get_screen_text_and_image)
-                    vision_status, vision_reason = await asyncio.to_thread(
-                        warden.evaluate_with_vision, state.active_goal, text, desktop_img, last_webcam_img, emotion
-                    )
-                    
-                    if vision_status == "focused_but_stuck":
-                        print("--- Emotion Loop: User is focused but stuck. Generating proactive support. ---")
-                        prompt = f"The user's goal is: '{state.active_goal}'. The user looks {emotion} while working on their task. They are looking at: '{text[:200]}'. Offer exactly one short, slightly sarcastic yet motivating sentence to nudge them to push through their frustration and get back to focus. Do NOT suggest they take a break or stop working, and do NOT offer to help them with their work. Your role is strictly to offer behavioral interventions/nudges."
-                        nudge = await asyncio.to_thread(ollama.chat, model=warden.model_name, messages=[{"role": "user", "content": prompt}])
-                        nudge_text = nudge['message']['content'].strip()
-                        await warden.speak_text(nudge_text)
-                    elif vision_status == "distracted":
-                        state.last_praise_time = time.time() # Reset praise clock
+
 
 async def physical_distraction_loop():
     while True:
@@ -182,10 +155,9 @@ async def evaluate_context(text: str, app_name: str, msg_type: str = None, webso
             
         if status == "ambiguous":
             print(f"--- Warden: '{app_name}' is ambiguous. Invoking Tier 2 Vision with webcam ---")
-            desktop_img = desktop.get_screenshot_path()
+            desktop_img = await asyncio.to_thread(desktop.get_screenshot_path)
             webcam_img = await asyncio.to_thread(webcam.get_snapshot_path)
-            emotion = await asyncio.to_thread(warden.evaluate_emotion, webcam_img) if webcam_img else "neutral"
-            vision_status, vision_reason = await asyncio.to_thread(warden.evaluate_with_vision, state.active_goal, text, desktop_img, webcam_img, emotion)
+            vision_status, vision_reason = await asyncio.to_thread(warden.evaluate_with_vision, state.active_goal, text, desktop_img, webcam_img)
             print(f"--- Warden: Tier 2 Vision returned '{vision_status}' (Reason: {vision_reason}) ---")
             
             if vision_status == "allowed":
@@ -206,14 +178,13 @@ async def evaluate_context(text: str, app_name: str, msg_type: str = None, webso
             async def enforce_grace_period():
                 await asyncio.sleep(15)
                 if state.grace_period_start and time.time() - state.grace_period_start >= 14:
-                    # Capture fresh emotion (fast 0.5s warmup capture)
-                    webcam_img = webcam.get_snapshot_path()
-                    fresh_emotion = await asyncio.to_thread(warden.evaluate_emotion, webcam_img) if webcam_img else "neutral"
+                    # Capture fresh webcam image
+                    webcam_img = await asyncio.to_thread(webcam.get_snapshot_path)
                     
-                    print(f"--- Grace period over. Triggering intervention. (Emotion: {fresh_emotion}) ---")
+                    print(f"--- Grace period over. Triggering intervention. ---")
                     
                     # No need for a desktop screenshot, OCR text is sufficient for generating a nudge
-                    nudge = await asyncio.to_thread(warden.generate_intervention, state.active_goal, text, None, fresh_emotion)
+                    nudge = await asyncio.to_thread(warden.generate_intervention, state.active_goal, text, None)
                     print(f"--- Intervention generated: {nudge} ---")
                     await warden.speak_text(nudge)
                     state.grace_period_start = None
@@ -272,7 +243,6 @@ async def backend_main():
     await asyncio.gather(
         desktop_loop(),
         pomodoro_loop(),
-        emotion_loop(),
         physical_distraction_loop(),
         ws_server.wait_closed()
     )

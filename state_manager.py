@@ -71,6 +71,9 @@ class StateManager:
         self.allowed_keywords = keywords
         self.pomodoro_mode = "focus"
         self.current_cycle = 1
+        self.state.approved_apps = []
+        self.state.approved_tabs = []
+        self.save_state()
 
     def is_app_approved(self, app_name: str) -> bool:
         return app_name in self.state.approved_apps

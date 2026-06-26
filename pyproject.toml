@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "customtkinter>=6.0.0",
-    "deepface>=0.0.100",
     "mss>=10.2.0",
     "ollama>=0.6.2",
     "openai>=2.44.0",
@@ -16,6 +15,6 @@ dependencies = [
     "pygame>=2.6.1",
     "pyscreenshot>=3.1",
     "pytesseract>=0.3.13",
-    "tf-keras>=2.21.0",
+    "screeninfo>=0.8.1",
     "websockets>=16.0",
 ]
