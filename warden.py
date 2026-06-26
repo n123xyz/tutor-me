@@ -56,7 +56,7 @@ class Warden:
                 return "allowed", f"Keyword matched: '{kw}'"
                 
         # Known distraction keywords (could be moved to config)
-        distraction_keywords = ["netflix", "twitter", "reddit", "facebook", "instagram", "tiktok"]
+        distraction_keywords = ["netflix", "twitter", "facebook", "instagram", "tiktok"]
         for kw in distraction_keywords:
             if kw in app_lower or kw in text_lower:
                 return "distracted", f"Distraction keyword matched: '{kw}'"
@@ -105,7 +105,8 @@ class Warden:
             return "ambiguous", "No images provided to vision model"
             
         try:
-            response = ollama.chat(model="gemma4:e4b", messages=[{
+            client = ollama.Client(timeout=60.0)
+            response = client.chat(model="gemma4:e4b", messages=[{
                 "role": "user", 
                 "content": prompt,
                 "images": images
@@ -138,6 +139,63 @@ class Warden:
             print(f"Error in vision evaluation: {e}")
             return "ambiguous", f"Vision model crashed: {str(e)}"
 
+    def evaluate_desktop_state(self, goal: str, ocr_text: str, desktop_imgs: List[str]) -> Tuple[bool, str]:
+        if not desktop_imgs:
+            return False, "No desktop screenshots available"
+            
+        prompt = (
+            f"The user's active focus goal is: '{goal}'. "
+            f"Here is some OCR text extracted from their screen: '{ocr_text[:500]}...'\n"
+            "Evaluate the provided desktop monitor screenshot. "
+            "If you see a mix of studying material and distracting activities (like a video game, social media, or movies), the user is distracted. "
+            "Do not allow them to bypass the check just because some study text is visible. "
+            "Respond with ONLY a valid JSON object in this format:\n"
+            "{\"distracted\": true | false, \"reason\": \"a short explanation of what the user is doing or why they are not distracted\"}"
+        )
+        
+        try:
+            print(f"--- Warden: Running desktop distraction check on {len(desktop_imgs)} monitors with Gemma Vision ---")
+            client = ollama.Client(timeout=60.0)
+            
+            for img_path in desktop_imgs:
+                if not os.path.exists(img_path):
+                    continue
+                    
+                response = client.chat(model="gemma4:e4b", messages=[{
+                    "role": "user",
+                    "content": prompt,
+                    "images": [img_path]
+                }])
+                
+                content = response['message']['content'].strip()
+                
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0].strip()
+                elif "```" in content:
+                    content = content.split("```")[1].split("```")[0].strip()
+                    
+                is_distracted = False
+                reason = "No reason provided"
+                
+                try:
+                    parsed = json.loads(content)
+                    is_distracted = parsed.get("distracted", False)
+                    reason = parsed.get("reason", "No reason provided")
+                except json.JSONDecodeError:
+                    content_lower = content.lower()
+                    if '"distracted": true' in content_lower or '"distracted":true' in content_lower:
+                        is_distracted = True
+                        reason = "Fallback parsing: desktop distraction detected"
+                        
+                if is_distracted:
+                    return True, f"Distraction found on a monitor: {reason}"
+                    
+            return False, "All monitors focused"
+                
+        except Exception as e:
+            print(f"Error in desktop state evaluation: {e}")
+            return False, f"Vision model failed: {str(e)}"
+
     def evaluate_physical_state(self, webcam_img: str, goal: str) -> Tuple[bool, str]:
         if not webcam_img or not os.path.exists(webcam_img):
             return False, "No webcam snapshot available"
@@ -156,7 +214,8 @@ class Warden:
         
         try:
             print("--- Warden: Running webcam physical distraction check with Gemma Vision ---")
-            response = ollama.chat(model="gemma4:e4b", messages=[{
+            client = ollama.Client(timeout=60.0)
+            response = client.chat(model="gemma4:e4b", messages=[{
                 "role": "user",
                 "content": prompt,
                 "images": [webcam_img]
@@ -214,10 +273,10 @@ class Warden:
 
     def generate_intervention(self, state_summary: str, ocr_text: str, image_path: Optional[str], emotion: str = "neutral") -> str:
         if emotion in ["sad", "angry", "fear"]:
-            prompt = f"The user is currently distracted. They are looking at: '{ocr_text[:200]}...'. Their face shows they are feeling {emotion}/frustrated. Generate exactly one short, slightly sarcastic sentence to nudge them back to work. Do NOT suggest they take a break or stop working."
+            prompt = f"The user's goal is: '{state_summary}'. They are currently distracted. They are looking at: '{ocr_text[:200]}...'. Their face shows they are feeling {emotion}/frustrated. Generate exactly one short, slightly sarcastic sentence to nudge them back to work. Do NOT suggest they take a break or stop working."
         else:
             emotion_str = f" Their face shows they are feeling {emotion}." if emotion != "neutral" else ""
-            prompt = f"The user is currently distracted. They are looking at: '{ocr_text[:200]}...'.{emotion_str} Generate exactly one short, punchy, sarcastic sentence to nudge them back to work."
+            prompt = f"The user's goal is: '{state_summary}'. They are currently distracted. They are looking at: '{ocr_text[:200]}...'.{emotion_str} Generate exactly one short, punchy, sarcastic sentence to nudge them back to work."
             
         messages = [{"role": "user", "content": prompt + " Do NOT offer to help the user with their task. You cannot directly help the user, you are just there to provide a behavioral intervention or nudge."}]
         

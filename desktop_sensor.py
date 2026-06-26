@@ -72,3 +72,38 @@ class DesktopSensor:
         except Exception as e:
             print(f"Error in OCR and image capture: {e}")
             return "", ""
+
+    def get_screen_text_and_segmented_images(self) -> tuple[str, list[str]]:
+        try:
+            path = "temp_screenshot_full.jpg"
+            if self._capture_screen(path, "90"):
+                image = Image.open(path)
+                # Perform OCR on full resolution image
+                text = pytesseract.image_to_string(image)
+                
+                segments = []
+                try:
+                    from screeninfo import get_monitors
+                    monitors = get_monitors()
+                    for i, m in enumerate(monitors):
+                        # x, y, width, height relative to the virtual desktop
+                        box = (m.x, m.y, m.x + m.width, m.y + m.height)
+                        segment = image.crop(box)
+                        # Downscale each monitor segment reasonably for the vision model
+                        segment.thumbnail((1200, 1200))
+                        seg_path = f"temp_screenshot_monitor_{i}.jpg"
+                        segment.save(seg_path, format="JPEG", quality=80)
+                        segments.append(seg_path)
+                except Exception as e:
+                    print(f"Error segmenting screen: {e}")
+                    # Fallback to single image
+                    image.thumbnail((1200, 1200))
+                    seg_path = "temp_screenshot_fallback.jpg"
+                    image.save(seg_path, format="JPEG", quality=80)
+                    segments.append(seg_path)
+                    
+                return text, segments
+            return "", []
+        except Exception as e:
+            print(f"Error in OCR and segmented image capture: {e}")
+            return "", []
