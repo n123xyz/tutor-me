@@ -285,7 +285,7 @@ class Warden:
         try:
             response = await self.tts_client.audio.speech.create(
                 model="tts-1",
-                voice="sohee",
+                voice="vivian",
                 response_format="wav",
                 input=text
             )

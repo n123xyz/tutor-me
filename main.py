@@ -22,7 +22,6 @@ webcam = WebcamSensor()
 
 app = None
 loop = None
-last_ambiguous_app = None
 ui_queue = queue.Queue()
 
 def on_goal_submit(goal: str, pacing: str):
@@ -56,13 +55,7 @@ def on_goal_submit(goal: str, pacing: str):
     
     threading.Thread(target=_parse_and_start, daemon=True).start()
 
-def on_clarification_response(is_required: bool):
-    global last_ambiguous_app
-    if is_required and last_ambiguous_app:
-        state.add_approved_app(last_ambiguous_app)
-        
-    last_ambiguous_app = None
-    ui_queue.put(lambda: app.minimal_mode("Focusing..."))
+
 
 async def websocket_handler(websocket, path=None):
     print("--- WebSocket: New client connected ---")
@@ -138,36 +131,44 @@ async def physical_distraction_loop():
                     print(f"--- Physical Distraction Loop: User is focused. (Reason/Status: {reason}) ---")
 
 async def evaluate_context(text: str, app_name: str, msg_type: str = None, websocket = None):
-    global last_ambiguous_app
     
-    status, reason = warden.check_keywords(text, state.allowed_keywords, state.state.approved_apps, app_name)
-    print(f"--- Warden: Tier 1 Keyword Match for '{app_name}' returned '{status}' (Reason: {reason}) ---")
-    
-    if status == "ambiguous":
-        if msg_type == "THIN_PAYLOAD" and websocket:
-            print(f"--- Warden: '{app_name}' is ambiguous. Requesting FAT_PAYLOAD from browser extension ---")
-            await websocket.send(json.dumps({"command": "SCRAPE_DOM"}))
-            return
-            
-        if len(text) > 200:
-            status, reason = await asyncio.to_thread(warden.evaluate_text_semantics, state.active_goal, text)
-            print(f"--- Warden: Tier 1.5 Semantic Match returned '{status}' (Reason: {reason}) ---")
-            
+    if app_name and app_name in state.known_links:
+        status, reason = state.known_links[app_name]
+        if status == "distracted":
+            nudge = await asyncio.to_thread(warden.generate_intervention, state.active_goal, text, None)
+            await warden.speak_text(nudge)
+        
+        print(f"--- Warden: Cache Match for '{app_name}' returned '{status}' (Reason: {reason}) ---")
+    else:
+        status, reason = warden.check_keywords(text, state.allowed_keywords, state.state.approved_apps, app_name)
+        print(f"--- Warden: Tier 1 Keyword Match for '{app_name}' returned '{status}' (Reason: {reason}) ---")
+        
         if status == "ambiguous":
-            print(f"--- Warden: '{app_name}' is ambiguous. Invoking Tier 2 Vision with webcam ---")
-            desktop_img = await asyncio.to_thread(desktop.get_screenshot_path)
-            webcam_img = await asyncio.to_thread(webcam.get_snapshot_path)
-            vision_status, vision_reason = await asyncio.to_thread(warden.evaluate_with_vision, state.active_goal, text, desktop_img, webcam_img)
-            print(f"--- Warden: Tier 2 Vision returned '{vision_status}' (Reason: {vision_reason}) ---")
-            
-            if vision_status == "allowed":
-                status = "allowed"
-            elif vision_status == "distracted":
-                status = "distracted"
-            else:
-                last_ambiguous_app = app_name
-                ui_queue.put(lambda: app.clarification_mode(app_name))
+            if msg_type == "THIN_PAYLOAD" and websocket:
+                print(f"--- Warden: '{app_name}' is ambiguous. Requesting FAT_PAYLOAD from browser extension ---")
+                await websocket.send(json.dumps({"command": "SCRAPE_DOM"}))
                 return
+                
+            if len(text) > 200:
+                status, reason = await asyncio.to_thread(warden.evaluate_text_semantics, state.active_goal, text)
+                print(f"--- Warden: Tier 1.5 Semantic Match returned '{status}' (Reason: {reason}) ---")
+                
+            if status == "ambiguous":
+                print(f"--- Warden: '{app_name}' is ambiguous. Invoking Tier 2 Vision with webcam ---")
+                desktop_img = await asyncio.to_thread(desktop.get_screenshot_path)
+                webcam_img = await asyncio.to_thread(webcam.get_snapshot_path)
+                vision_status, vision_reason = await asyncio.to_thread(warden.evaluate_with_vision, state.active_goal, text, desktop_img, webcam_img)
+                print(f"--- Warden: Tier 2 Vision returned '{vision_status}' (Reason: {vision_reason}) ---")
+                
+                if vision_status == "allowed":
+                    status = "allowed"
+                elif vision_status == "distracted":
+                    status = "distracted"
+                else:
+                    status = "allowed"
+        
+        if app_name and status in ["allowed", "distracted"]:
+            state.known_links[app_name] = (status, "Cached result")
 
     if status == "distracted":
         if not state.grace_period_start:
@@ -263,7 +264,7 @@ def poll_ui_queue():
     app.after(100, poll_ui_queue)
 
 if __name__ == "__main__":
-    app = TutorUI(on_goal_submit, on_clarification_response)
+    app = TutorUI(on_goal_submit)
     
     backend_thread = threading.Thread(target=start_backend, daemon=True)
     backend_thread.start()
