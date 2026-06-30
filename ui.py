@@ -2,11 +2,10 @@ import customtkinter as ctk
 from typing import Callable, Optional
 
 class TutorUI(ctk.CTk):
-    def __init__(self, on_goal_submit: Callable[[str, str], None], on_clarification_response: Callable[[bool], None]):
+    def __init__(self, on_goal_submit: Callable[[str, str], None]):
         super().__init__()
         
         self.on_goal_submit = on_goal_submit
-        self.on_clarification_response = on_clarification_response
         
         self.title("AI Tutor Assistant")
         self.geometry("400x200")
@@ -55,33 +54,6 @@ class TutorUI(ctk.CTk):
     def update_minimal_status(self, status_text: str, time_remaining: str):
         pass # UI is hidden, no need to update labels
 
-    def clarification_mode(self, app_name: str):
-        self.clear_window()
-        self.current_mode = "clarification"
-        
-        self.geometry("400x200")
-        self.overrideredirect(False)
-        self.attributes("-alpha", 1.0)
-        self.deiconify() # Restore window from taskbar
-        
-        lbl = ctk.CTkLabel(self, text=f"You opened: {app_name}", font=("Arial", 14, "bold"))
-        lbl.pack(pady=(20, 10))
-        
-        lbl2 = ctk.CTkLabel(self, text="Is this required for your goal?", font=("Arial", 12))
-        lbl2.pack(pady=10)
-        
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(pady=10)
-        
-        btn_yes = ctk.CTkButton(btn_frame, text="Yes", width=100, command=lambda: self._handle_clarification(True))
-        btn_yes.pack(side="left", padx=10)
-        
-        btn_no = ctk.CTkButton(btn_frame, text="No", width=100, command=lambda: self._handle_clarification(False))
-        btn_no.pack(side="right", padx=10)
-
-    def _handle_clarification(self, is_required: bool):
-        self.on_clarification_response(is_required)
-
 if __name__ == "__main__":
-    app = TutorUI(lambda g, p: print(f"Goal: {g}, Pacing: {p}"), lambda r: print(f"Required: {r}"))
+    app = TutorUI(lambda g, p: print(f"Goal: {g}, Pacing: {p}"))
     app.mainloop()

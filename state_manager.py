@@ -38,6 +38,7 @@ class StateManager:
         self.pacing_style: str = "Continuous Focus"
         self.focus_start_time: float = 0.0
         self.last_praise_time: float = 0.0
+        self.known_links: dict = {}
 
     def load_state(self) -> AppState:
         if os.path.exists(self.config_path):
@@ -73,6 +74,7 @@ class StateManager:
         self.current_cycle = 1
         self.state.approved_apps = []
         self.state.approved_tabs = []
+        self.known_links = {}
         self.save_state()
 
     def is_app_approved(self, app_name: str) -> bool:
