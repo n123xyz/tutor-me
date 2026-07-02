@@ -48,7 +48,7 @@ The WebSocket server requires an SSL/TLS certificate to communicate securely wit
 ```bash
 openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -sha256 -days 365 -nodes -subj "/CN=localhost"
 ```
-3. Ensure you have the necessary system dependencies (e.g., `scrot` or Wayland equivalent for `pyscreenshot`, and proper webcam drivers).
+3. Ensure you have the necessary system dependencies (e.g.,`sqlite3`, `scrot` or Wayland equivalent for `pyscreenshot`, and proper webcam drivers).
 4. Run the backend using `uv`:
 ```bash
 uv run main.py

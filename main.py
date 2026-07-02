@@ -5,7 +5,6 @@ import threading
 import time
 import logging
 import queue
-import ollama
 
 logging.getLogger("websockets").setLevel(logging.CRITICAL)
 
@@ -13,7 +12,9 @@ from state_manager import StateManager
 from warden import Warden
 from desktop_sensor import DesktopSensor
 from webcam_sensor import WebcamSensor
-from ui import TutorUI
+from ui import SetupUI, DashboardUI
+import database
+import customtkinter as ctk
 
 state = StateManager()
 warden = Warden(state.state.settings.tts_url)
@@ -22,49 +23,167 @@ webcam = WebcamSensor()
 
 app = None
 loop = None
+root = None
 ui_queue = queue.Queue()
 
-def on_goal_submit(goal: str, pacing: str):
-    print(f"Goal received: {goal}")
-    print(f"Pacing selected: {pacing}")
+def run_async_in_background(coro):
+    if loop:
+        asyncio.run_coroutine_threadsafe(coro, loop)
+
+def on_setup_submit(goal):
+    print("--- State 2: Generating Curriculum ---")
+    def _generate():
+        tasks = warden.generate_curriculum(goal)
+        database.save_curriculum(goal, tasks)
+        print("--- Curriculum saved ---")
+        run_async_in_background(warden.speak_text("Queue generated. Press Start when ready."))
+        ui_queue.put(transition_to_dashboard)
     
-    def _parse_and_start():
-        try:
-            print("--- Background Thread: Starting to parse user goal ---")
-            res = warden.parse_user_goal(goal)
-            print(f"--- Background Thread: Successfully parsed goal: {res} ---")
+    threading.Thread(target=_generate, daemon=True).start()
+
+def transition_to_dashboard():
+    global app
+    if app:
+        app.destroy()
+    app = DashboardUI(root, on_session_start, on_session_done, on_queue_task_done)
+    database.run_midnight_reset()
+    update_dashboard_task()
+
+def update_dashboard_task():
+    task = database.get_next_incomplete_task()
+    queue_list = database.get_upcoming_queue()
+    
+    if task:
+        prefix = "[Daily] " if task.get("is_daily_habit") else ""
+        app.set_task_text(f"{prefix}{task['task_title']}")
+        
+        # Display the rest of the queue
+        app.update_queue(queue_list[1:])
+    else:
+        app.set_task_text("All tasks complete for now!")
+        app.update_queue([])
+
+def on_session_start(focus_style):
+    print(f"--- State 3: Active Session Started ({focus_style}) ---")
+    database.run_midnight_reset()
+    update_dashboard_task()
+    task = database.get_next_incomplete_task()
+    if task:
+        state.set_active_task(task)
+        state.grace_period_start = None
+        state.focus_style = focus_style
+        if focus_style == "pomodoro":
+            state.pomodoro_start_time = time.time()
+        else:
+            state.pomodoro_start_time = None
             
-            print("--- Background Thread: Setting active goal ---")
-            state.set_active_goal(res.goal_summary, res.allowed_keywords)
-            for app_name in res.allowed_applications:
-                state.add_approved_app(app_name)
+        # Overdue Nudge Logic
+        if not task.get("is_daily_habit") and task.get("target_completion_date"):
+            try:
+                from datetime import datetime, timezone
+                target_dt = datetime.fromisoformat(task["target_completion_date"].replace('Z', '+00:00'))
+                if target_dt.tzinfo is None:
+                    target_dt = target_dt.replace(tzinfo=timezone.utc)
+                target_local = target_dt.astimezone().date()
+                today_local = datetime.now().astimezone().date()
+                days_left = (target_local - today_local).days
                 
-            state.pacing_style = pacing
-            state.focus_start_time = time.time()
-            state.last_praise_time = time.time()
-            state.pomodoro_mode = "focus"
+                if days_left < 0:
+                    run_async_in_background(warden.speak_text(f"We are behind on {task['task_title']}. Let's lock in and clear it off the board."))
+            except Exception as e:
+                print(f"Error calculating days left for nudge: {e}")
                 
-            print("--- Background Thread: Scheduling UI transition to minimal mode ---")
-            ui_queue.put(lambda: app.minimal_mode("Focusing..."))
-            print("--- Background Thread: Thread execution complete ---")
-        except Exception as e:
-            print(f"--- Background Thread: Error parsing goal: {e} ---")
-            import traceback
-            traceback.print_exc()
-            ui_queue.put(lambda: app.submit_btn.configure(state="normal", text="Start Focus Session") if hasattr(app, "submit_btn") else None)
+    else:
+        run_async_in_background(warden.speak_text("You have no incomplete tasks."))
+
+def on_session_done():
+    print("--- State 5: Flow Chainer ---")
+    state.pomodoro_start_time = None
+    if state.active_task:
+        database.mark_task_complete(state.active_task["id"])
+        state.active_task = None
+        state.app_mode = "break"
     
-    threading.Thread(target=_parse_and_start, daemon=True).start()
+    database.run_midnight_reset()
+    task = database.get_next_incomplete_task()
+    queue_list = database.get_upcoming_queue()
+    
+    if task:
+        app.set_task_text("Break Time! 05:00")
+        app.update_queue(queue_list)
+        run_async_in_background(warden.speak_text("Great job. Take a break."))
+        
+        def _break_countdown():
+            for remaining in range(300, 0, -1):
+                mins, secs = divmod(remaining, 60)
+                ui_queue.put(lambda t=f"Break Time! {mins:02d}:{secs:02d}": app.set_task_text(t))
+                time.sleep(1)
+            
+            prefix = "[Daily] " if task.get("is_daily_habit") else ""
+            title = f"{prefix}{task['task_title']}"
+            
+            ui_queue.put(lambda: app.set_task_text(title))
+            ui_queue.put(lambda: app.update_queue(queue_list[1:]))
+            
+            run_async_in_background(warden.speak_text(f"Break over. Starting {title}."))
+            
+            # Auto resume
+            ui_queue.put(lambda: app._start())
+            
+        threading.Thread(target=_break_countdown, daemon=True).start()
+    else:
+        app.set_task_text("All tasks complete!")
+        app.update_queue([])
+        run_async_in_background(warden.speak_text("You are done for the day."))
+        state.app_mode = "dashboard"
+
+def on_queue_task_done(task_id):
+    database.mark_task_complete(task_id)
+    update_dashboard_task()
+
+def trigger_pomodoro_break():
+    if app:
+        app.deiconify()
+        app.set_task_text("Pomodoro Break! 05:00")
+        app.start_btn.configure(state="disabled")
+        app.done_btn.configure(state="disabled")
+        for child in app.style_frame.winfo_children():
+            child.configure(state="disabled")
+            
+    run_async_in_background(warden.speak_text("Pomodoro cycle complete. Take a 5 minute break."))
+    
+    def _break_countdown():
+        for remaining in range(300, 0, -1):
+            if getattr(state, "app_mode", None) != "break":
+                return
+            mins, secs = divmod(remaining, 60)
+            ui_queue.put(lambda t=f"Pomodoro Break! {mins:02d}:{secs:02d}": app.set_task_text(t) if app else None)
+            time.sleep(1)
+            
+        if getattr(state, "app_mode", None) != "break":
+            return
+            
+        if state.active_task:
+            prefix = "[Daily] " if state.active_task.get("is_daily_habit") else ""
+            title = f"{prefix}{state.active_task['task_title']}"
+            ui_queue.put(lambda: app.set_task_text(title) if app else None)
+            
+        run_async_in_background(warden.speak_text("Break over. Let's resume focus."))
+        
+        # Auto resume
+        ui_queue.put(lambda: app._start() if app else None)
+        
+    threading.Thread(target=_break_countdown, daemon=True).start()
 
 
 
 async def websocket_handler(websocket, path=None):
-    print("--- WebSocket: New client connected ---")
+    print(f"--- WS Connection established from browser ---")
     async for message in websocket:
         try:
             data = json.loads(message)
             msg_type = data.get('type', 'UNKNOWN')
             url = data.get('url', 'unknown url')
-            print(f"--- WebSocket: Received {msg_type} payload from {url} ---")
             
             if data['type'] in ("THIN_PAYLOAD", "FAT_PAYLOAD"):
                 text = data.get('text', '')
@@ -73,97 +192,104 @@ async def websocket_handler(websocket, path=None):
                 eval_text = text if text else title
                 app_name = url
                 
-                if state.pomodoro_mode == "focus" and app.current_mode == "minimal":
+                print(f"--- WS Message Received: {msg_type} from {app_name} ---")
+                
+                if state.app_mode == "focus":
                     await evaluate_context(eval_text, app_name, msg_type, websocket)
         except Exception as e:
             print(f"Error handling WS message: {e}")
 
+async def pomodoro_loop():
+    while True:
+        await asyncio.sleep(5)
+        if state.app_mode == "focus" and getattr(state, "focus_style", "continuous") == "pomodoro":
+            if getattr(state, "pomodoro_start_time", None):
+                elapsed = time.time() - state.pomodoro_start_time
+                if elapsed >= 25 * 60:
+                    state.app_mode = "break"
+                    state.pomodoro_start_time = None
+                    ui_queue.put(trigger_pomodoro_break)
+
 async def desktop_loop():
     while True:
-        if state.pomodoro_mode == "focus" and app.current_mode == "minimal":
-            print("--- Desktop Loop: Running Desktop Vision Check ---")
+        if state.app_mode == "focus" and state.active_task:
             text, desktop_imgs = await asyncio.to_thread(desktop.get_screen_text_and_segmented_images)
-            is_distracted, reason = await asyncio.to_thread(warden.evaluate_desktop_state, state.active_goal, text, desktop_imgs)
+            is_distracted, reason = await asyncio.to_thread(warden.evaluate_desktop_state, state.active_task["task_title"], text, desktop_imgs)
             
             if is_distracted:
-                print(f"--- Desktop Loop: Distraction detected! Reason: {reason} ---")
                 if not state.grace_period_start:
                     state.grace_period_start = time.time()
-                    state.last_praise_time = time.time() # Reset praise clock
-                    print(f"--- Desktop Distraction detected. Grace period started. ---")
                     
                     async def enforce_grace_period():
                         await asyncio.sleep(15)
                         if state.grace_period_start and time.time() - state.grace_period_start >= 14:
-                            print(f"--- Grace period over. Triggering intervention. ---")
-                            # Trigger intervention without passing emotion as it's just desktop distraction
-                            nudge = await asyncio.to_thread(warden.generate_intervention, state.active_goal, text, None)
-                            print(f"--- Intervention generated: {nudge} ---")
+                            task_info = state.active_task
+                            nudge = await asyncio.to_thread(
+                                warden.generate_intervention, 
+                                task_info["task_title"], 
+                                text, 
+                                None,
+                                task_info.get("date_added"),
+                                task_info.get("target_completion_date")
+                            )
                             await warden.speak_text(nudge)
                             state.grace_period_start = None
-
                     asyncio.create_task(enforce_grace_period())
-            else:
-                print(f"--- Desktop Loop: User is focused on desktop. ({reason}) ---")
         await asyncio.sleep(300)
-
-
 
 async def physical_distraction_loop():
     while True:
-        await asyncio.sleep(180) # Every 3 minutes
-        if state.pomodoro_mode == "focus" and app.current_mode == "minimal":
-            print("--- Physical Distraction Loop: Running webcam check ---")
+        await asyncio.sleep(180)
+        if state.app_mode == "focus" and state.active_task:
             webcam_img = await asyncio.to_thread(webcam.get_snapshot_path)
             if webcam_img:
                 is_distracted, reason = await asyncio.to_thread(
-                    warden.evaluate_physical_state, webcam_img, state.active_goal
+                    warden.evaluate_physical_state, webcam_img, state.active_task["task_title"]
                 )
                 if is_distracted:
-                    print(f"--- Physical Distraction Loop: Distraction detected! Reason: {reason} ---")
-                    state.last_praise_time = time.time() # Reset praise clock
-                    # Generate and speak intervention
+                    task_info = state.active_task
                     nudge_text = await asyncio.to_thread(
-                        warden.generate_intervention, state.active_goal, reason, webcam_img
+                        warden.generate_intervention, 
+                        task_info["task_title"], 
+                        reason, 
+                        webcam_img,
+                        task_info.get("date_added"),
+                        task_info.get("target_completion_date")
                     )
                     await warden.speak_text(nudge_text)
-                else:
-                    print(f"--- Physical Distraction Loop: User is focused. (Reason/Status: {reason}) ---")
 
 async def evaluate_context(text: str, app_name: str, msg_type: str = None, websocket = None):
-    
+    task_info = state.active_task
     if app_name and app_name in state.known_links:
         status, reason = state.known_links[app_name]
         if status == "distracted":
-            nudge = await asyncio.to_thread(warden.generate_intervention, state.active_goal, text, None)
+            nudge = await asyncio.to_thread(
+                warden.generate_intervention, 
+                task_info["task_title"], 
+                text, 
+                None,
+                task_info.get("date_added"),
+                task_info.get("target_completion_date")
+            )
             await warden.speak_text(nudge)
-        
-        print(f"--- Warden: Cache Match for '{app_name}' returned '{status}' (Reason: {reason}) ---")
     else:
-        status, reason = warden.check_keywords(text, state.allowed_keywords, state.state.approved_apps, app_name)
-        print(f"--- Warden: Tier 1 Keyword Match for '{app_name}' returned '{status}' (Reason: {reason}) ---")
+        status, reason = warden.check_keywords(text, state.allowed_software, [], app_name)
         
         if status == "ambiguous":
             if msg_type == "THIN_PAYLOAD" and websocket:
-                print(f"--- Warden: '{app_name}' is ambiguous. Requesting FAT_PAYLOAD from browser extension ---")
                 await websocket.send(json.dumps({"command": "SCRAPE_DOM"}))
                 return
                 
             if len(text) > 200:
-                status, reason = await asyncio.to_thread(warden.evaluate_text_semantics, state.active_goal, text)
-                print(f"--- Warden: Tier 1.5 Semantic Match returned '{status}' (Reason: {reason}) ---")
+                status, reason = await asyncio.to_thread(warden.evaluate_text_semantics, state.active_task["task_title"], text)
                 
             if status == "ambiguous":
-                print(f"--- Warden: '{app_name}' is ambiguous. Invoking Tier 2 Vision with webcam ---")
                 desktop_img = await asyncio.to_thread(desktop.get_screenshot_path)
                 webcam_img = await asyncio.to_thread(webcam.get_snapshot_path)
-                vision_status, vision_reason = await asyncio.to_thread(warden.evaluate_with_vision, state.active_goal, text, desktop_img, webcam_img)
-                print(f"--- Warden: Tier 2 Vision returned '{vision_status}' (Reason: {vision_reason}) ---")
+                vision_status, vision_reason = await asyncio.to_thread(warden.evaluate_with_vision, state.active_task["task_title"], text, desktop_img, webcam_img)
                 
-                if vision_status == "allowed":
-                    status = "allowed"
-                elif vision_status == "distracted":
-                    status = "distracted"
+                if vision_status in ["allowed", "distracted"]:
+                    status = vision_status
                 else:
                     status = "allowed"
         
@@ -173,67 +299,23 @@ async def evaluate_context(text: str, app_name: str, msg_type: str = None, webso
     if status == "distracted":
         if not state.grace_period_start:
             state.grace_period_start = time.time()
-            state.last_praise_time = time.time() # Reset praise clock
-            print(f"--- Distraction detected: {app_name}. Grace period started. ---")
-            
             async def enforce_grace_period():
                 await asyncio.sleep(15)
                 if state.grace_period_start and time.time() - state.grace_period_start >= 14:
-                    # Capture fresh webcam image
                     webcam_img = await asyncio.to_thread(webcam.get_snapshot_path)
-                    
-                    print(f"--- Grace period over. Triggering intervention. ---")
-                    
-                    # No need for a desktop screenshot, OCR text is sufficient for generating a nudge
-                    nudge = await asyncio.to_thread(warden.generate_intervention, state.active_goal, text, None)
-                    print(f"--- Intervention generated: {nudge} ---")
+                    nudge = await asyncio.to_thread(
+                        warden.generate_intervention, 
+                        task_info["task_title"], 
+                        text, 
+                        None,
+                        task_info.get("date_added"),
+                        task_info.get("target_completion_date")
+                    )
                     await warden.speak_text(nudge)
                     state.grace_period_start = None
-
             asyncio.create_task(enforce_grace_period())
     elif status == "allowed":
-        if state.grace_period_start:
-            print(f"--- Focus restored on {app_name}. Grace period reset. ---")
         state.grace_period_start = None
-
-async def pomodoro_loop():
-    while True:
-        await asyncio.sleep(1)
-        if state.pomodoro_mode == "focus" and app.current_mode == "minimal":
-            now = time.time()
-            elapsed_focus = now - state.focus_start_time
-            elapsed_praise = now - state.last_praise_time
-            
-            # Praise check (every 10 minutes = 600 seconds)
-            if elapsed_praise >= 600:
-                print("--- Pomodoro Loop: User has been focused for 10 minutes. Generating praise. ---")
-                state.last_praise_time = now # Reset immediately
-                minutes = int(elapsed_focus // 60)
-                praise = await asyncio.to_thread(warden.generate_praise, state.active_goal, minutes)
-                print(f"--- Praise generated: {praise} ---")
-                await warden.speak_text(praise)
-                
-            # Pomodoro check (25 minutes = 1500 seconds)
-            if "Pomodoro" in state.pacing_style and elapsed_focus >= 1500:
-                print("--- Pomodoro Loop: 25 minutes elapsed. Starting Break. ---")
-                state.pomodoro_mode = "break"
-                state.pomodoro_end_time = now + 300 # 5 minute break
-                ui_queue.put(lambda: app.update_minimal_status("Break Time!", "5:00"))
-                await warden.speak_text("You've been working hard for 25 minutes. Take a 5 minute break.")
-        
-        elif state.pomodoro_mode == "break" and app.current_mode == "minimal":
-            now = time.time()
-            remaining = state.pomodoro_end_time - now
-            if remaining <= 0:
-                print("--- Pomodoro Loop: Break over. Resuming Focus. ---")
-                state.pomodoro_mode = "focus"
-                state.focus_start_time = now
-                state.last_praise_time = now
-                ui_queue.put(lambda: app.update_minimal_status("Focusing...", "Session Active"))
-                await warden.speak_text("Break's over! Let's get back to work.")
-            else:
-                mins, secs = divmod(int(remaining), 60)
-                ui_queue.put(lambda: app.update_minimal_status("Break Time!", f"{mins:02d}:{secs:02d}"))
 
 async def backend_main():
     import ssl
@@ -241,9 +323,10 @@ async def backend_main():
     ssl_context.load_cert_chain("cert.pem", "key.pem")
     
     ws_server = await websockets.serve(websocket_handler, "localhost", 8765, ssl=ssl_context)
+    print("--- WebSocket Server listening on wss://localhost:8765 ---")
     await asyncio.gather(
-        desktop_loop(),
         pomodoro_loop(),
+        desktop_loop(),
         physical_distraction_loop(),
         ws_server.wait_closed()
     )
@@ -261,13 +344,26 @@ def poll_ui_queue():
             func()
         except Exception as e:
             print(f"Error in UI queue execution: {e}")
-    app.after(100, poll_ui_queue)
+    if root:
+        root.after(100, poll_ui_queue)
 
 if __name__ == "__main__":
-    app = TutorUI(on_goal_submit)
+    database.initialize_db()
+    curr = database.get_active_curriculum()
     
+    root = ctk.CTk()
+    root.withdraw()
+    
+    if curr:
+        database.run_midnight_reset()
+        app = DashboardUI(root, on_session_start, on_session_done, on_queue_task_done)
+        update_dashboard_task()
+    else:
+        app = SetupUI(root, on_setup_submit)
+        
     backend_thread = threading.Thread(target=start_backend, daemon=True)
     backend_thread.start()
     
-    app.after(100, poll_ui_queue)
-    app.mainloop()
+    if root:
+        root.after(100, poll_ui_queue)
+        root.mainloop()
