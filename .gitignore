@@ -12,3 +12,4 @@ wheels/
 *.wav
 *.pem
 config.json
+tutorme.db

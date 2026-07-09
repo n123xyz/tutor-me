@@ -7,11 +7,6 @@ import pygame
 import asyncio
 import os
 
-class GoalParseResult(BaseModel):
-    goal_summary: str
-    allowed_applications: List[str]
-    allowed_keywords: List[str]
-
 class Warden:
     def __init__(self, tts_url: str):
         self.tts_url = tts_url
@@ -27,25 +22,56 @@ class Warden:
         except Exception as e:
             print(f"Pygame mixer init failed: {e}")
 
-    def parse_user_goal(self, user_prompt: str) -> GoalParseResult:
-        system_prompt = "You are an AI assistant helping a user focus. Extract the main goal, and infer allowed software and keywords based on their prompt. Return valid JSON only, following this schema: {'goal_summary': 'string', 'allowed_applications': ['string'], 'allowed_keywords': ['string']}"
+    def generate_curriculum(self, goal: str) -> list:
+        schema = {
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "task_title": {"type": "string"},
+                            "description": {"type": "string"},
+                            "sequence_order": {"type": ["integer", "null"], "description": "Order of task. Null for daily habits."},
+                            "is_daily_habit": {"type": "boolean"},
+                            "days_allotted": {"type": ["integer", "null"], "description": "1 to 3 days to complete a non-daily task. Null if daily habit."},
+                            "allowed_software": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            }
+                        },
+                        "required": ["task_title", "description", "is_daily_habit", "allowed_software", "days_allotted"]
+                    }
+                }
+            },
+            "required": ["tasks"]
+        }
+        
+        system_prompt = (
+            "You are an AI Architect. The user wants to achieve this goal: " + goal + ". "
+            "Break these goals down into a sequential queue of Study Tasks. Each task should take roughly 30 to 60 minutes. "
+            "Identify 'Daily Habits' (set is_daily_habit=True and sequence_order=null, days_allotted=null). "
+            "For one-off 'Sequential Tasks' (set is_daily_habit=False and assign a sequence_order 1, 2, 3...), assign a 'days_allotted' integer (between 1 and 3) representing how soon the user should complete this task to stay on track for the week. "
+            "Output must strictly match this JSON schema."
+        )
+        
+        user_prompt = f"Goal: {goal}"
         
         try:
-            print(f"--- Warden: Sending chat request to Ollama using model {self.model_name} ---")
+            print(f"--- Warden: Generating curriculum with {self.model_name} ---")
             response = ollama.chat(model=self.model_name, messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"My goal for this session is: {user_prompt}"}
-            ], format="json")
+                {"role": "user", "content": user_prompt}
+            ], format=schema)
             
-            print(f"--- Warden: Received response from Ollama ---")
             data = json.loads(response['message']['content'])
-            print(f"--- Warden: JSON parsed successfully: {data} ---")
-            return GoalParseResult(**data)
+            return data.get("tasks", [])
         except Exception as e:
-            print(f"--- Warden: Failed to parse goal: {e} ---")
+            print(f"--- Warden: Failed to generate curriculum: {e} ---")
             import traceback
             traceback.print_exc()
-            return GoalParseResult(goal_summary=user_prompt, allowed_applications=[], allowed_keywords=[])
+            return []
 
     def check_keywords(self, text: str, allowed_keywords: List[str], allowed_apps: List[str], app_name: str) -> Tuple[str, str]:
         import re
@@ -92,6 +118,7 @@ class Warden:
                 status = parsed.get("status", "ambiguous").lower()
                 reason = parsed.get("reason", "No reason provided")
                 if status in ["distracted", "allowed"]:
+                    print(f"--- Warden Decision (Text): {status.upper()} | Reason: {reason} ---")
                     return status, reason
                 return "ambiguous", f"Parsed invalid status: {status}"
             except json.JSONDecodeError:
@@ -135,6 +162,7 @@ class Warden:
                 status = parsed.get("status", "ambiguous").lower()
                 reason = parsed.get("reason", "No reason provided")
                 if status in ["distracted", "allowed", "focused_but_stuck"]:
+                    print(f"--- Warden Decision (Vision): {status.upper()} | Reason: {reason} ---")
                     return status, reason
                 else:
                     return "distracted", f"Parsed invalid status: {status}"
@@ -198,8 +226,10 @@ class Warden:
                         reason = "Fallback parsing: desktop distraction detected"
                         
                 if is_distracted:
+                    print(f"--- Warden Decision (Desktop): DISTRACTED | Reason: {reason} ---")
                     return True, f"Distraction found on a monitor: {reason}"
                     
+            print("--- Warden Decision (Desktop): ALLOWED | Reason: All monitors focused ---")
             return False, "All monitors focused"
                 
         except Exception as e:
@@ -242,6 +272,7 @@ class Warden:
                 parsed = json.loads(content)
                 is_distracted = parsed.get("distracted", False)
                 reason = parsed.get("reason", "No reason provided")
+                print(f"--- Warden Decision (Physical): {'DISTRACTED' if is_distracted else 'ALLOWED'} | Reason: {reason} ---")
                 return bool(is_distracted), reason
             except json.JSONDecodeError:
                 content_lower = content.lower()
@@ -253,13 +284,21 @@ class Warden:
             print(f"Error in physical state evaluation: {e}")
             return False, f"Vision model failed: {str(e)}"
 
-    def generate_intervention(self, state_summary: str, ocr_text: str, image_path: Optional[str]) -> str:
-        prompt = f"The user's goal is: '{state_summary}'. They are currently distracted. They are looking at: '{ocr_text[:200]}...'. Generate exactly one short, punchy, sarcastic sentence to nudge them back to work."
+    def generate_intervention(self, current_task: str, text: str = None, img_path: str = None, date_added: str = None, target_date: str = None) -> str:
+        prompt = f"The user is distracted while working on: {current_task}.\n"
+        
+        if date_added and target_date:
+            prompt += f"This task was added on {date_added} and the target completion date is {target_date}.\n"
+            prompt += "If the task is old or overdue, be more authoritative and urge them to clear it off the board.\n"
+            
+        if text:
+            prompt += f"They are looking at this text: {text[:500]}...\n"
+        prompt += "Generate exactly one short, punchy, sarcastic sentence to nudge them back to work."
             
         messages = [{"role": "user", "content": prompt + " Do NOT offer to help the user with their task. You cannot directly help the user, you are just there to provide a behavioral intervention or nudge."}]
         
-        if image_path and os.path.exists(image_path):
-            messages[0]['images'] = [image_path]
+        if img_path and os.path.exists(img_path):
+            messages[0]['images'] = [img_path]
             model_to_use = "gemma4:e4b" # Must use a vision model if images are provided
         else:
             model_to_use = self.model_name
@@ -282,6 +321,7 @@ class Warden:
             return f"Great job focusing for the last {minutes_focused} minutes!"
 
     async def speak_text(self, text: str):
+        print(f"--- TTS Speaking: {text} ---")
         try:
             response = await self.tts_client.audio.speech.create(
                 model="tts-1",
@@ -291,10 +331,12 @@ class Warden:
             )
             output_file = "temp_nudge.wav"
             
-            # OpenAI async client response handling
-            response.stream_to_file(output_file)
-            
-            pygame.mixer.music.load(output_file)
-            pygame.mixer.music.play()
+            def _play_audio():
+                # OpenAI async client response handling
+                response.stream_to_file(output_file)
+                pygame.mixer.music.load(output_file)
+                pygame.mixer.music.play()
+                
+            await asyncio.to_thread(_play_audio)
         except Exception as e:
             print(f"Error in TTS: {e}")
