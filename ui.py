@@ -6,7 +6,7 @@ class SetupUI(ctk.CTkToplevel):
         super().__init__(master)
         self.on_submit = on_submit
         self.title("TutorMe - Setup")
-        self.geometry("800x400")
+        self.geometry("1000x400")
         
         self.setup_ui()
         
@@ -36,14 +36,15 @@ class SetupUI(ctk.CTkToplevel):
         self.on_submit(goal)
 
 class DashboardUI(ctk.CTkToplevel):
-    def __init__(self, master, on_start: Callable, on_done: Callable, on_queue_task_done: Callable = None):
+    def __init__(self, master, on_start: Callable, on_done: Callable, on_queue_task_done: Callable = None, on_update_goal: Callable = None):
         super().__init__(master)
         self.on_start = on_start
         self.on_done = on_done
         self.on_queue_task_done = on_queue_task_done
+        self.on_update_goal = on_update_goal
         
         self.title("TutorMe - Daily Standup")
-        self.geometry("600x700")
+        self.geometry("800x700")
         
         # Up Next Section
         self.up_next_frame = ctk.CTkFrame(self)
@@ -72,7 +73,12 @@ class DashboardUI(ctk.CTkToplevel):
         ctk.CTkRadioButton(self.style_frame, text="Pomodoro (25m)", variable=self.focus_style_var, value="pomodoro").pack(side="left", padx=10)
         
         # Upcoming Queue Section
-        ctk.CTkLabel(self, text="UPCOMING QUEUE", font=("Arial", 12, "bold"), text_color="gray").pack(pady=(10, 5), anchor="w", padx=20)
+        queue_header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        queue_header_frame.pack(fill="x", padx=20, pady=(10, 5))
+        
+        ctk.CTkLabel(queue_header_frame, text="UPCOMING QUEUE", font=("Arial", 12, "bold"), text_color="gray").pack(side="left")
+        self.update_goal_btn = ctk.CTkButton(queue_header_frame, text="Update Goal", width=100, height=24, command=self._open_update_goal_dialog)
+        self.update_goal_btn.pack(side="right")
         
         self.queue_frame = ctk.CTkScrollableFrame(self)
         self.queue_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -150,3 +156,25 @@ class DashboardUI(ctk.CTkToplevel):
         self.done_btn.configure(state="disabled")
         for child in self.style_frame.winfo_children():
             child.configure(state="normal")
+
+    def _open_update_goal_dialog(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Update Goal")
+        dialog.geometry("800x300")
+        # Ensure dialog stays on top
+        dialog.attributes("-topmost", True)
+        
+        lbl = ctk.CTkLabel(dialog, text="What is your new goal?", font=("Arial", 18, "bold"))
+        lbl.pack(pady=(20, 10))
+        
+        goal_entry = ctk.CTkTextbox(dialog, width=500, height=100, font=("Arial", 14))
+        goal_entry.pack(pady=10)
+        
+        def submit():
+            new_goal = goal_entry.get("1.0", "end-1c").strip()
+            if new_goal and self.on_update_goal:
+                self.on_update_goal(new_goal)
+            dialog.destroy()
+            
+        btn = ctk.CTkButton(dialog, text="Update Curriculum", font=("Arial", 14, "bold"), command=submit)
+        btn.pack(pady=20)

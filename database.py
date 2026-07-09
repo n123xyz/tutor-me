@@ -91,6 +91,58 @@ def save_curriculum(goal: str, tasks: list):
         ))
         
     conn.commit()
+    conn.commit()
+    conn.close()
+
+def append_tasks_to_active_curriculum(new_goal_text: str, tasks: list):
+    curr = get_active_curriculum()
+    if not curr:
+        save_curriculum(new_goal_text, tasks)
+        return
+        
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    updated_goal = curr["goal"] + "\n+ " + new_goal_text
+    cursor.execute("UPDATE weekly_curriculum SET goal = ? WHERE id = ?", (updated_goal, curr["id"]))
+    
+    cursor.execute("SELECT MAX(sequence_order) FROM study_tasks WHERE curriculum_id = ?", (curr["id"],))
+    row = cursor.fetchone()
+    max_seq = row[0] if row and row[0] is not None else 0
+    
+    now_utc = datetime.now(timezone.utc).isoformat()
+    
+    for t in tasks:
+        days = t.get("days_allotted", 1)
+        if days is None:
+            days = 1
+            
+        target_date = datetime.now(timezone.utc)
+        import datetime as dt_lib
+        target_date = target_date + dt_lib.timedelta(days=days)
+        target_iso = target_date.isoformat()
+        
+        seq = t.get("sequence_order", None)
+        if seq is not None:
+            seq += max_seq
+            
+        cursor.execute("""
+            INSERT INTO study_tasks (curriculum_id, task_title, description, allowed_software, sequence_order, is_daily_habit, is_completed, last_completed_date, date_added, target_completion_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            curr["id"], 
+            t["task_title"], 
+            t.get("description", ""), 
+            json.dumps(t.get("allowed_software", [])), 
+            seq,
+            1 if t.get("is_daily_habit", False) else 0,
+            0, 
+            None,
+            now_utc,
+            target_iso
+        ))
+        
+    conn.commit()
     conn.close()
 
 def get_active_curriculum():

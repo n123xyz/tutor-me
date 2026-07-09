@@ -41,11 +41,36 @@ def on_setup_submit(goal):
     
     threading.Thread(target=_generate, daemon=True).start()
 
+def on_update_goal(goal):
+    print(f"--- Appending to Curriculum: {goal} ---")
+    if app:
+        app.set_task_text("Generating additional curriculum...")
+        app.update_queue([])
+        
+    def _generate():
+        try:
+            tasks = warden.generate_curriculum(goal)
+            if not tasks:
+                print("--- Generation returned empty tasks ---")
+                run_async_in_background(warden.speak_text("I couldn't generate tasks. Please try again."))
+                ui_queue.put(update_dashboard_task)
+                return
+                
+            database.append_tasks_to_active_curriculum(goal, tasks)
+            print("--- Tasks appended ---")
+            run_async_in_background(warden.speak_text("New tasks added to the queue. Ready to conquer."))
+            ui_queue.put(update_dashboard_task)
+        except Exception as e:
+            print(f"Error in background generation: {e}")
+            ui_queue.put(update_dashboard_task)
+    
+    threading.Thread(target=_generate, daemon=True).start()
+
 def transition_to_dashboard():
     global app
     if app:
         app.destroy()
-    app = DashboardUI(root, on_session_start, on_session_done, on_queue_task_done)
+    app = DashboardUI(root, on_session_start, on_session_done, on_queue_task_done, on_update_goal)
     database.run_midnight_reset()
     update_dashboard_task()
 
@@ -212,42 +237,48 @@ async def pomodoro_loop():
 
 async def desktop_loop():
     while True:
-        if state.app_mode == "focus" and state.active_task:
+        task_info = state.active_task
+        if state.app_mode == "focus" and task_info:
             text, desktop_imgs = await asyncio.to_thread(desktop.get_screen_text_and_segmented_images)
-            is_distracted, reason = await asyncio.to_thread(warden.evaluate_desktop_state, state.active_task["task_title"], text, desktop_imgs)
-            
-            if is_distracted:
-                if not state.grace_period_start:
-                    state.grace_period_start = time.time()
-                    
-                    async def enforce_grace_period():
-                        await asyncio.sleep(15)
-                        if state.grace_period_start and time.time() - state.grace_period_start >= 14:
-                            task_info = state.active_task
-                            nudge = await asyncio.to_thread(
-                                warden.generate_intervention, 
-                                task_info["task_title"], 
-                                text, 
-                                None,
-                                task_info.get("date_added"),
-                                task_info.get("target_completion_date")
-                            )
-                            await warden.speak_text(nudge)
-                            state.grace_period_start = None
-                    asyncio.create_task(enforce_grace_period())
+            task_info = state.active_task
+            if task_info:
+                is_distracted, reason = await asyncio.to_thread(warden.evaluate_desktop_state, task_info["task_title"], text, desktop_imgs)
+                
+                if is_distracted:
+                    if not state.grace_period_start:
+                        state.grace_period_start = time.time()
+                        
+                        async def enforce_grace_period():
+                            await asyncio.sleep(15)
+                            if state.grace_period_start and time.time() - state.grace_period_start >= 14:
+                                t_info = state.active_task
+                                if t_info:
+                                    nudge = await asyncio.to_thread(
+                                        warden.generate_intervention, 
+                                        t_info["task_title"], 
+                                        text, 
+                                        None,
+                                        t_info.get("date_added"),
+                                        t_info.get("target_completion_date")
+                                    )
+                                    await warden.speak_text(nudge)
+                                    state.grace_period_start = None
+                        asyncio.create_task(enforce_grace_period())
         await asyncio.sleep(300)
 
 async def physical_distraction_loop():
     while True:
         await asyncio.sleep(180)
-        if state.app_mode == "focus" and state.active_task:
+        task_info = state.active_task
+        if state.app_mode == "focus" and task_info:
             webcam_img = await asyncio.to_thread(webcam.get_snapshot_path)
-            if webcam_img:
+            task_info = state.active_task
+            if webcam_img and task_info:
                 is_distracted, reason = await asyncio.to_thread(
-                    warden.evaluate_physical_state, webcam_img, state.active_task["task_title"]
+                    warden.evaluate_physical_state, webcam_img, task_info["task_title"]
                 )
-                if is_distracted:
-                    task_info = state.active_task
+                task_info = state.active_task
+                if is_distracted and task_info:
                     nudge_text = await asyncio.to_thread(
                         warden.generate_intervention, 
                         task_info["task_title"], 
@@ -260,18 +291,23 @@ async def physical_distraction_loop():
 
 async def evaluate_context(text: str, app_name: str, msg_type: str = None, websocket = None):
     task_info = state.active_task
+    if not task_info:
+        return
+        
     if app_name and app_name in state.known_links:
         status, reason = state.known_links[app_name]
         if status == "distracted":
-            nudge = await asyncio.to_thread(
-                warden.generate_intervention, 
-                task_info["task_title"], 
-                text, 
-                None,
-                task_info.get("date_added"),
-                task_info.get("target_completion_date")
-            )
-            await warden.speak_text(nudge)
+            task_info = state.active_task
+            if task_info:
+                nudge = await asyncio.to_thread(
+                    warden.generate_intervention, 
+                    task_info["task_title"], 
+                    text, 
+                    None,
+                    task_info.get("date_added"),
+                    task_info.get("target_completion_date")
+                )
+                await warden.speak_text(nudge)
     else:
         status, reason = warden.check_keywords(text, state.allowed_software, [], app_name)
         
@@ -281,37 +317,43 @@ async def evaluate_context(text: str, app_name: str, msg_type: str = None, webso
                 return
                 
             if len(text) > 200:
-                status, reason = await asyncio.to_thread(warden.evaluate_text_semantics, state.active_task["task_title"], text)
+                task_info = state.active_task
+                if task_info:
+                    status, reason = await asyncio.to_thread(warden.evaluate_text_semantics, task_info["task_title"], text)
                 
             if status == "ambiguous":
                 desktop_img = await asyncio.to_thread(desktop.get_screenshot_path)
                 webcam_img = await asyncio.to_thread(webcam.get_snapshot_path)
-                vision_status, vision_reason = await asyncio.to_thread(warden.evaluate_with_vision, state.active_task["task_title"], text, desktop_img, webcam_img)
-                
-                if vision_status in ["allowed", "distracted"]:
-                    status = vision_status
-                else:
-                    status = "allowed"
+                task_info = state.active_task
+                if task_info:
+                    vision_status, vision_reason = await asyncio.to_thread(warden.evaluate_with_vision, task_info["task_title"], text, desktop_img, webcam_img)
+                    
+                    if vision_status in ["allowed", "distracted"]:
+                        status = vision_status
+                    else:
+                        status = "allowed"
         
         if app_name and status in ["allowed", "distracted"]:
             state.known_links[app_name] = (status, "Cached result")
 
-    if status == "distracted":
+    if status == "distracted" and state.app_mode == "focus":
         if not state.grace_period_start:
             state.grace_period_start = time.time()
             async def enforce_grace_period():
                 await asyncio.sleep(15)
                 if state.grace_period_start and time.time() - state.grace_period_start >= 14:
                     webcam_img = await asyncio.to_thread(webcam.get_snapshot_path)
-                    nudge = await asyncio.to_thread(
-                        warden.generate_intervention, 
-                        task_info["task_title"], 
-                        text, 
-                        None,
-                        task_info.get("date_added"),
-                        task_info.get("target_completion_date")
-                    )
-                    await warden.speak_text(nudge)
+                    t_info = state.active_task
+                    if t_info:
+                        nudge = await asyncio.to_thread(
+                            warden.generate_intervention, 
+                            t_info["task_title"], 
+                            text, 
+                            None,
+                            t_info.get("date_added"),
+                            t_info.get("target_completion_date")
+                        )
+                        await warden.speak_text(nudge)
                     state.grace_period_start = None
             asyncio.create_task(enforce_grace_period())
     elif status == "allowed":
@@ -356,7 +398,7 @@ if __name__ == "__main__":
     
     if curr:
         database.run_midnight_reset()
-        app = DashboardUI(root, on_session_start, on_session_done, on_queue_task_done)
+        app = DashboardUI(root, on_session_start, on_session_done, on_queue_task_done, on_update_goal)
         update_dashboard_task()
     else:
         app = SetupUI(root, on_setup_submit)
