@@ -321,22 +321,32 @@ class Warden:
             return f"Great job focusing for the last {minutes_focused} minutes!"
 
     async def speak_text(self, text: str):
-        print(f"--- TTS Speaking: {text} ---")
-        try:
-            response = await self.tts_client.audio.speech.create(
-                model="tts-1",
-                voice="vivian",
-                response_format="wav",
-                input=text
-            )
-            output_file = "temp_nudge.wav"
+        if not hasattr(self, 'tts_lock'):
+            self.tts_lock = asyncio.Lock()
             
-            def _play_audio():
-                # OpenAI async client response handling
-                response.stream_to_file(output_file)
-                pygame.mixer.music.load(output_file)
-                pygame.mixer.music.play()
+        async with self.tts_lock:
+            print(f"--- TTS Speaking: {text} ---")
+            try:
+                response = await self.tts_client.audio.speech.create(
+                    model="tts-1",
+                    voice="vivian",
+                    response_format="wav",
+                    input=text
+                )
+                output_file = "temp_nudge.wav"
                 
-            await asyncio.to_thread(_play_audio)
-        except Exception as e:
-            print(f"Error in TTS: {e}")
+                def _play_audio():
+                    try:
+                        # OpenAI async client response handling
+                        response.stream_to_file(output_file)
+                        pygame.mixer.music.load(output_file)
+                        pygame.mixer.music.play()
+                        import time
+                        while pygame.mixer.music.get_busy():
+                            time.sleep(0.1)
+                    except Exception as e:
+                        print(f"Pygame failed to play audio: {e}")
+                    
+                await asyncio.to_thread(_play_audio)
+            except Exception as e:
+                print(f"Error in TTS: {e}")

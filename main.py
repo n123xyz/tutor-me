@@ -70,7 +70,7 @@ def transition_to_dashboard():
     global app
     if app:
         app.destroy()
-    app = DashboardUI(root, on_session_start, on_session_done, on_queue_task_done, on_update_goal)
+    app = DashboardUI(root, on_session_start, on_session_done, on_queue_task_done, on_update_goal, on_pin_task, on_add_task)
     database.run_midnight_reset()
     update_dashboard_task()
 
@@ -134,6 +134,7 @@ def on_session_done():
     queue_list = database.get_upcoming_queue()
     
     if task:
+        app.deiconify()
         app.set_task_text("Break Time! 05:00")
         app.update_queue(queue_list)
         run_async_in_background(warden.speak_text("Great job. Take a break."))
@@ -164,6 +165,14 @@ def on_session_done():
 
 def on_queue_task_done(task_id):
     database.mark_task_complete(task_id)
+    update_dashboard_task()
+
+def on_pin_task(task_id):
+    database.pin_task(task_id)
+    update_dashboard_task()
+
+def on_add_task(task_title: str, target_completion_date: str):
+    database.add_manual_task(task_title, target_completion_date)
     update_dashboard_task()
 
 def trigger_pomodoro_break():
@@ -398,7 +407,7 @@ if __name__ == "__main__":
     
     if curr:
         database.run_midnight_reset()
-        app = DashboardUI(root, on_session_start, on_session_done, on_queue_task_done, on_update_goal)
+        app = DashboardUI(root, on_session_start, on_session_done, on_queue_task_done, on_update_goal, on_pin_task, on_add_task)
         update_dashboard_task()
     else:
         app = SetupUI(root, on_setup_submit)

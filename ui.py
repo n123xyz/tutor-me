@@ -36,12 +36,14 @@ class SetupUI(ctk.CTkToplevel):
         self.on_submit(goal)
 
 class DashboardUI(ctk.CTkToplevel):
-    def __init__(self, master, on_start: Callable, on_done: Callable, on_queue_task_done: Callable = None, on_update_goal: Callable = None):
+    def __init__(self, master, on_start: Callable, on_done: Callable, on_queue_task_done: Callable = None, on_update_goal: Callable = None, on_pin_task: Callable = None, on_add_task: Callable = None):
         super().__init__(master)
         self.on_start = on_start
         self.on_done = on_done
         self.on_queue_task_done = on_queue_task_done
         self.on_update_goal = on_update_goal
+        self.on_pin_task = on_pin_task
+        self.on_add_task = on_add_task
         
         self.title("TutorMe - Daily Standup")
         self.geometry("800x700")
@@ -79,6 +81,8 @@ class DashboardUI(ctk.CTkToplevel):
         ctk.CTkLabel(queue_header_frame, text="UPCOMING QUEUE", font=("Arial", 12, "bold"), text_color="gray").pack(side="left")
         self.update_goal_btn = ctk.CTkButton(queue_header_frame, text="Update Goal", width=100, height=24, command=self._open_update_goal_dialog)
         self.update_goal_btn.pack(side="right")
+        self.add_task_btn = ctk.CTkButton(queue_header_frame, text="Add Task", width=100, height=24, command=self._open_add_task_dialog)
+        self.add_task_btn.pack(side="right", padx=(0, 10))
         
         self.queue_frame = ctk.CTkScrollableFrame(self)
         self.queue_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -137,6 +141,10 @@ class DashboardUI(ctk.CTkToplevel):
             if self.on_queue_task_done:
                 btn = ctk.CTkButton(row_frame, text="✓", width=30, height=24, command=lambda t_id=task["id"]: self.on_queue_task_done(t_id))
                 btn.pack(side="right", padx=(5, 0))
+                
+            if self.on_pin_task:
+                pin_btn = ctk.CTkButton(row_frame, text="↑", width=30, height=24, command=lambda t_id=task["id"]: self.on_pin_task(t_id))
+                pin_btn.pack(side="right", padx=(5, 5))
 
     def _start(self):
         self.iconify()
@@ -178,3 +186,51 @@ class DashboardUI(ctk.CTkToplevel):
             
         btn = ctk.CTkButton(dialog, text="Update Curriculum", font=("Arial", 14, "bold"), command=submit)
         btn.pack(pady=20)
+
+    def _open_add_task_dialog(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Add Manual Task")
+        dialog.geometry("500x350")
+        dialog.attributes("-topmost", True)
+        
+        lbl = ctk.CTkLabel(dialog, text="Task Title:", font=("Arial", 14, "bold"))
+        lbl.pack(pady=(20, 5))
+        
+        title_entry = ctk.CTkEntry(dialog, width=400, font=("Arial", 14))
+        title_entry.pack(pady=5)
+        
+        lbl_date = ctk.CTkLabel(dialog, text="Deadline (YYYY-MM-DD):", font=("Arial", 14, "bold"))
+        lbl_date.pack(pady=(20, 5))
+        
+        date_entry = ctk.CTkEntry(dialog, width=200, font=("Arial", 14))
+        date_entry.pack(pady=5)
+        
+        def submit():
+            title = title_entry.get().strip()
+            date_str = date_entry.get().strip()
+            
+            if not title:
+                return
+                
+            iso_date = None
+            if date_str:
+                try:
+                    from datetime import datetime, timezone
+                    dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    # Set the deadline to the end of the day (23:59:59)
+                    dt = dt.replace(hour=23, minute=59, second=59)
+                    iso_date = dt.isoformat()
+                except ValueError:
+                    # Could show an error, but let's just ignore or set no date
+                    print("Invalid date format")
+                    return
+            else:
+                from datetime import datetime, timezone
+                iso_date = datetime.now(timezone.utc).isoformat()
+                
+            if self.on_add_task:
+                self.on_add_task(title, iso_date)
+            dialog.destroy()
+            
+        btn = ctk.CTkButton(dialog, text="Add Task", font=("Arial", 14, "bold"), command=submit)
+        btn.pack(pady=30)

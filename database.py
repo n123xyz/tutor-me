@@ -33,10 +33,17 @@ def initialize_db():
             last_completed_date TEXT,
             date_added TEXT,
             target_completion_date TEXT,
+            is_pinned BOOLEAN DEFAULT 0,
             FOREIGN KEY (curriculum_id) REFERENCES weekly_curriculum(id)
         )
     """)
     
+    # Add column if missing (for existing db)
+    try:
+        cursor.execute("ALTER TABLE study_tasks ADD COLUMN is_pinned BOOLEAN DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+        
     conn.commit()
     conn.close()
 
@@ -205,14 +212,24 @@ def get_next_incomplete_task():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Priority 1: Daily Habits
+    # Priority 0: Pinned Task
     cursor.execute("""
         SELECT id, task_title, description, allowed_software, sequence_order, is_daily_habit, date_added, target_completion_date
         FROM study_tasks 
-        WHERE curriculum_id = ? AND is_completed = 0 AND is_daily_habit = 1
-        ORDER BY id ASC LIMIT 1
+        WHERE curriculum_id = ? AND is_completed = 0 AND is_pinned = 1
+        LIMIT 1
     """, (curr["id"],))
     row = cursor.fetchone()
+    
+    # Priority 1: Daily Habits
+    if not row:
+        cursor.execute("""
+            SELECT id, task_title, description, allowed_software, sequence_order, is_daily_habit, date_added, target_completion_date
+            FROM study_tasks 
+            WHERE curriculum_id = ? AND is_completed = 0 AND is_daily_habit = 1
+            ORDER BY id ASC LIMIT 1
+        """, (curr["id"],))
+        row = cursor.fetchone()
     
     # Priority 2: Sequential Tasks
     if not row:
@@ -220,7 +237,7 @@ def get_next_incomplete_task():
             SELECT id, task_title, description, allowed_software, sequence_order, is_daily_habit, date_added, target_completion_date
             FROM study_tasks 
             WHERE curriculum_id = ? AND is_completed = 0 AND is_daily_habit = 0
-            ORDER BY sequence_order ASC LIMIT 1
+            ORDER BY target_completion_date ASC LIMIT 1
         """, (curr["id"],))
         row = cursor.fetchone()
         
@@ -249,7 +266,7 @@ def get_upcoming_queue():
     
     # Get all uncompleted tasks
     cursor.execute("""
-        SELECT id, task_title, is_daily_habit, sequence_order, target_completion_date
+        SELECT id, task_title, is_daily_habit, sequence_order, target_completion_date, is_pinned
         FROM study_tasks 
         WHERE curriculum_id = ? AND is_completed = 0
     """, (curr["id"],))
@@ -263,17 +280,59 @@ def get_upcoming_queue():
             "task_title": r[1],
             "is_daily_habit": bool(r[2]),
             "sequence_order": r[3],
-            "target_completion_date": r[4]
+            "target_completion_date": r[4],
+            "is_pinned": bool(r[5])
         })
         
-    # Sort: Daily Habits first, then Sequential Tasks by sequence_order
-    tasks.sort(key=lambda x: (not x["is_daily_habit"], x["sequence_order"] if x["sequence_order"] is not None else float('inf')))
+    # Sort: Pinned first, then Daily Habits, then Sequential Tasks by target_completion_date
+    tasks.sort(key=lambda x: (not x["is_pinned"], not x["is_daily_habit"], x["target_completion_date"] if x["target_completion_date"] else "9999-12-31"))
     return tasks
+
+def pin_task(task_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE study_tasks SET is_pinned = 0")
+    cursor.execute("UPDATE study_tasks SET is_pinned = 1 WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
 
 def mark_task_complete(task_id: int):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     now_utc = datetime.now(timezone.utc).isoformat()
     cursor.execute("UPDATE study_tasks SET is_completed = 1, last_completed_date = ? WHERE id = ?", (now_utc, task_id))
+    conn.commit()
+    conn.close()
+
+def add_manual_task(task_title: str, target_completion_date: str):
+    curr = get_active_curriculum()
+    if not curr:
+        return
+        
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT MAX(sequence_order) FROM study_tasks WHERE curriculum_id = ?", (curr["id"],))
+    row = cursor.fetchone()
+    max_seq = row[0] if row and row[0] is not None else 0
+    
+    now_utc = datetime.now(timezone.utc).isoformat()
+    
+    cursor.execute("""
+        INSERT INTO study_tasks (curriculum_id, task_title, description, allowed_software, sequence_order, is_daily_habit, is_completed, last_completed_date, date_added, target_completion_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        curr["id"], 
+        task_title, 
+        "", 
+        "[]", 
+        max_seq + 1,
+        0,
+        0, 
+        None,
+        now_utc,
+        target_completion_date
+    ))
+    
     conn.commit()
     conn.close()
