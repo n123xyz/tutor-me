@@ -8,9 +8,10 @@ import os
 from supertonic import TTS
 
 class Warden:
-    def __init__(self, voice_style: str = "F1"):
-        self.model_name = "gemma4:e4b" # Change to specific model name as needed
-        self.vision_client = ollama.Client(timeout=60.0)
+    def __init__(self, voice_style: str = "F1", support_vision: bool = True, model_name: str = "gemma4:e4b"):
+        self.model_name = model_name
+        self.support_vision = support_vision
+        self.vision_client = ollama.Client(timeout=60.0) if support_vision else None
         self.tts = TTS(model="supertonic-3")
         self.voice_style = self.tts.get_voice_style(voice_style)
         try:
@@ -128,6 +129,9 @@ class Warden:
             return "ambiguous", f"Model crashed: {str(e)}"
 
     def evaluate_with_vision(self, goal: str, ocr_text: str, desktop_img: str, webcam_img: str) -> Tuple[str, str]:
+        if not self.support_vision:
+            return "ambiguous", "Vision modality disabled"
+            
         prompt = f"The user is supposed to be focusing on: {goal}. Look at these screenshots. Are they distracted or working? Reply with ONLY a valid JSON object in this format: {{\"status\": \"distracted\" | \"allowed\" | \"focused_but_stuck\", \"reason\": \"a short 1-sentence explanation\"}}"
         
         images = []
@@ -140,7 +144,7 @@ class Warden:
             return "ambiguous", "No images provided to vision model"
             
         try:
-            response = self.vision_client.chat(model="gemma4:e4b", messages=[{
+            response = self.vision_client.chat(model=self.model_name, messages=[{
                 "role": "user", 
                 "content": prompt,
                 "images": images
@@ -175,6 +179,14 @@ class Warden:
             return "ambiguous", f"Vision model crashed: {str(e)}"
 
     def evaluate_desktop_state(self, goal: str, ocr_text: str, desktop_imgs: List[str]) -> Tuple[bool, str]:
+        if not self.support_vision:
+            if ocr_text and len(ocr_text.strip()) > 50:
+                print("--- Warden: Running desktop distraction check via OCR (Vision Disabled) ---")
+                status, reason = self.evaluate_text_semantics(goal, ocr_text)
+                return (status == "distracted"), f"OCR fallback: {reason}"
+            return False, "Vision modality disabled and insufficient OCR text"
+            
+            
         if not desktop_imgs:
             return False, "No desktop screenshots available"
             
@@ -195,7 +207,7 @@ class Warden:
                 if not os.path.exists(img_path):
                     continue
                     
-                response = self.vision_client.chat(model="gemma4:e4b", messages=[{
+                response = self.vision_client.chat(model=self.model_name, messages=[{
                     "role": "user",
                     "content": prompt,
                     "images": [img_path]
@@ -233,6 +245,9 @@ class Warden:
             return False, f"Vision model failed: {str(e)}"
 
     def evaluate_physical_state(self, webcam_img: str, goal: str) -> Tuple[bool, str]:
+        if not self.support_vision:
+            return False, "Vision modality disabled"
+            
         if not webcam_img or not os.path.exists(webcam_img):
             return False, "No webcam snapshot available"
             
@@ -251,7 +266,7 @@ class Warden:
         
         try:
             print("--- Warden: Running webcam physical distraction check with Gemma Vision ---")
-            response = self.vision_client.chat(model="gemma4:e4b", messages=[{
+            response = self.vision_client.chat(model=self.model_name, messages=[{
                 "role": "user",
                 "content": prompt,
                 "images": [webcam_img]
@@ -293,11 +308,10 @@ class Warden:
             
         messages = [{"role": "user", "content": prompt + " Do NOT offer to help the user with their task. You cannot directly help the user, you are just there to provide a behavioral intervention or nudge."}]
         
-        if img_path and os.path.exists(img_path):
+        if img_path and os.path.exists(img_path) and self.support_vision:
             messages[0]['images'] = [img_path]
-            model_to_use = "gemma4:e4b" # Must use a vision model if images are provided
-        else:
-            model_to_use = self.model_name
+            
+        model_to_use = self.model_name
             
         try:
             response = ollama.chat(model=model_to_use, messages=messages)
@@ -324,7 +338,9 @@ class Warden:
             print(f"--- TTS Speaking: {text} ---")
             try:
                 wav, dur = await asyncio.to_thread(self.tts.synthesize, text, voice_style=self.voice_style, lang="en")
-                output_file = "temp_nudge.wav"
+                import uuid
+                import tempfile
+                output_file = os.path.join(tempfile.gettempdir(), f"temp_nudge_{uuid.uuid4().hex}.wav")
                 
                 def _play_audio():
                     try:
@@ -334,8 +350,19 @@ class Warden:
                         import time
                         while pygame.mixer.music.get_busy():
                             time.sleep(0.1)
+                            
+                        # Unload to release the file lock on Windows
+                        if hasattr(pygame.mixer.music, 'unload'):
+                            pygame.mixer.music.unload()
                     except Exception as e:
                         print(f"Pygame failed to play audio: {e}")
+                    finally:
+                        # Clean up the temporary file
+                        try:
+                            if os.path.exists(output_file):
+                                os.remove(output_file)
+                        except Exception:
+                            pass
                     
                 await asyncio.to_thread(_play_audio)
             except Exception as e:

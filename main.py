@@ -5,6 +5,12 @@ import threading
 import time
 import logging
 import queue
+import argparse
+
+parser = argparse.ArgumentParser(description="Tutor-Me")
+parser.add_argument('--no-vision', action='store_true', help="Disable vision modality")
+parser.add_argument('--model', type=str, default="gemma4:e4b", help="Model to use for Ollama")
+args, _ = parser.parse_known_args()
 
 logging.getLogger("websockets").setLevel(logging.CRITICAL)
 
@@ -17,7 +23,11 @@ import database
 import customtkinter as ctk
 
 state = StateManager()
-warden = Warden(state.state.settings.voice_style)
+warden = Warden(
+    voice_style=state.state.settings.voice_style,
+    support_vision=not args.no_vision,
+    model_name=args.model
+)
 desktop = DesktopSensor()
 webcam = WebcamSensor()
 
