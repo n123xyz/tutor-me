@@ -199,15 +199,33 @@ class DashboardUI(ctk.CTkToplevel):
         title_entry = ctk.CTkEntry(dialog, width=400, font=("Arial", 14))
         title_entry.pack(pady=5)
         
-        lbl_date = ctk.CTkLabel(dialog, text="Deadline (YYYY-MM-DD):", font=("Arial", 14, "bold"))
+        daily_var = ctk.BooleanVar(value=False)
+        
+        def on_daily_toggle():
+            if daily_var.get():
+                deadline_frame.pack_forget()
+            else:
+                deadline_frame.pack(fill="x", before=btn_frame)
+                
+        daily_cb = ctk.CTkCheckBox(dialog, text="Is this a Daily Habit?", variable=daily_var, font=("Arial", 14), command=on_daily_toggle)
+        daily_cb.pack(pady=(15, 5))
+
+        deadline_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        deadline_frame.pack(fill="x")
+        
+        lbl_date = ctk.CTkLabel(deadline_frame, text="Deadline (YYYY-MM-DD):", font=("Arial", 14, "bold"))
         lbl_date.pack(pady=(20, 5))
         
-        date_entry = ctk.CTkEntry(dialog, width=200, font=("Arial", 14))
+        date_entry = ctk.CTkEntry(deadline_frame, width=200, font=("Arial", 14))
         date_entry.pack(pady=5)
+        
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=30)
         
         def submit():
             title = title_entry.get().strip()
             date_str = date_entry.get().strip()
+            is_daily = daily_var.get()
             
             if not title:
                 return
@@ -229,8 +247,8 @@ class DashboardUI(ctk.CTkToplevel):
                 iso_date = datetime.now(timezone.utc).isoformat()
                 
             if self.on_add_task:
-                self.on_add_task(title, iso_date)
+                self.on_add_task(title, iso_date, is_daily)
             dialog.destroy()
             
-        btn = ctk.CTkButton(dialog, text="Add Task", font=("Arial", 14, "bold"), command=submit)
-        btn.pack(pady=30)
+        btn = ctk.CTkButton(btn_frame, text="Add Task", font=("Arial", 14, "bold"), command=submit)
+        btn.pack()

@@ -18,7 +18,7 @@ It watches your screen and web activity, intervening when you get distracted, an
 | **Backend** | The central brain. Orchestrates AI evaluation, state, and UI. | Python, CustomTkinter |
 | **Firefox Extension** | Monitors active tabs seamlessly across multiple profiles. | Manifest V3 |
 | **Local LLM & Vision** | Evaluates screen context and webcam feeds (Tiered). | Ollama (`gemma4:e4b`) |
-| **Local TTS Engine** | Speaks out interventions or praises. | OpenAI-compatible TTS |
+| **Local TTS Engine** | Speaks out interventions or praises. | Supertonic (`supertonic-3`) |
 
 ## Key Features
 
@@ -34,7 +34,6 @@ It watches your screen and web activity, intervening when you get distracted, an
 - **Python 3.11+** (using `uv`)
 - **Firefox Developer Edition** (recommended)
 - Local **Ollama** installed with the `gemma4:e4b` model.
-- Local **TTS server** running on `http://localhost:5050`.
 
 ### 2. Backend & TLS Setup
 The tutor uses a secure local WebSocket. Generate a self-signed certificate first:

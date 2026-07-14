@@ -17,7 +17,7 @@ import database
 import customtkinter as ctk
 
 state = StateManager()
-warden = Warden(state.state.settings.tts_url)
+warden = Warden(state.state.settings.voice_style)
 desktop = DesktopSensor()
 webcam = WebcamSensor()
 
@@ -171,8 +171,8 @@ def on_pin_task(task_id):
     database.pin_task(task_id)
     update_dashboard_task()
 
-def on_add_task(task_title: str, target_completion_date: str):
-    database.add_manual_task(task_title, target_completion_date)
+def on_add_task(task_title: str, target_completion_date: str, is_daily_habit: bool = False):
+    database.add_manual_task(task_title, target_completion_date, is_daily_habit)
     update_dashboard_task()
 
 def trigger_pomodoro_break():

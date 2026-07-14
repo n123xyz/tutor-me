@@ -304,7 +304,7 @@ def mark_task_complete(task_id: int):
     conn.commit()
     conn.close()
 
-def add_manual_task(task_title: str, target_completion_date: str):
+def add_manual_task(task_title: str, target_completion_date: str, is_daily_habit: bool = False):
     curr = get_active_curriculum()
     if not curr:
         return
@@ -316,6 +316,8 @@ def add_manual_task(task_title: str, target_completion_date: str):
     row = cursor.fetchone()
     max_seq = row[0] if row and row[0] is not None else 0
     
+    seq_val = None if is_daily_habit else (max_seq + 1)
+    
     now_utc = datetime.now(timezone.utc).isoformat()
     
     cursor.execute("""
@@ -326,8 +328,8 @@ def add_manual_task(task_title: str, target_completion_date: str):
         task_title, 
         "", 
         "[]", 
-        max_seq + 1,
-        0,
+        seq_val,
+        1 if is_daily_habit else 0,
         0, 
         None,
         now_utc,

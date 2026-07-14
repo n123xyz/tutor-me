@@ -2,21 +2,17 @@ import json
 from pydantic import BaseModel
 from typing import List, Tuple, Optional
 import ollama
-from openai import OpenAI
 import pygame
 import asyncio
 import os
+from supertonic import TTS
 
 class Warden:
-    def __init__(self, tts_url: str):
-        self.tts_url = tts_url
+    def __init__(self, voice_style: str = "F1"):
         self.model_name = "gemma4:e4b" # Change to specific model name as needed
         self.vision_client = ollama.Client(timeout=60.0)
-        from openai import AsyncOpenAI
-        base_url = self.tts_url
-        if base_url.endswith("/v1/audio/speech"):
-            base_url = base_url.replace("/audio/speech", "")
-        self.tts_client = AsyncOpenAI(base_url=base_url, api_key="not-needed")
+        self.tts = TTS(model="supertonic-3")
+        self.voice_style = self.tts.get_voice_style(voice_style)
         try:
             pygame.mixer.init()
         except Exception as e:
@@ -327,18 +323,12 @@ class Warden:
         async with self.tts_lock:
             print(f"--- TTS Speaking: {text} ---")
             try:
-                response = await self.tts_client.audio.speech.create(
-                    model="tts-1",
-                    voice="vivian",
-                    response_format="wav",
-                    input=text
-                )
+                wav, dur = await asyncio.to_thread(self.tts.synthesize, text, voice_style=self.voice_style, lang="en")
                 output_file = "temp_nudge.wav"
                 
                 def _play_audio():
                     try:
-                        # OpenAI async client response handling
-                        response.stream_to_file(output_file)
+                        self.tts.save_audio(wav, output_file)
                         pygame.mixer.music.load(output_file)
                         pygame.mixer.music.play()
                         import time

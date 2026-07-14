@@ -7,7 +7,7 @@ import database
 CONFIG_FILE = "config.json"
 
 class Settings(BaseModel):
-    tts_url: str = "http://localhost:5050/v1/audio/speech" # Example OpenAI compatible endpoint
+    voice_style: str = "F1"
 
 class AppState(BaseModel):
     settings: Settings = Settings()
